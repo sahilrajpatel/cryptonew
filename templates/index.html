@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Patel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; background:#0f1720; color:#e6eef8; padding:18px; }
+    input, select, button, textarea { padding:8px; margin:6px 0; width:100%; box-sizing:border-box; background:#0b1220; color:#e6eef8; border:1px solid #1f2a37; border-radius:6px; }
+    .row { display:flex; gap:12px; align-items:flex-start; }
+    .col { flex:1; min-width:0; }
+    .card { background:#111827; padding:12px; border-radius:10px; margin-bottom:12px; }
+    label { font-size:13px; color:#aeb8c8; display:block; margin-bottom:4px; }
+    .small { font-size:12px; color:#9aa7bf; }
+    .alerts-list { margin-top:12px; }
+    .alert-item { background:#0b1320; padding:10px; border-radius:6px; margin-bottom:8px; }
+    .btn { background:#1f6feb; color:white; border:none; padding:8px 12px; cursor:pointer; border-radius:6px; }
+    .btn.red { background:#ef4444; }
+    .btn.green { background:#10b981; }
+    #layout { display:flex; gap:12px; flex-wrap:wrap; }
+    #left { width:420px; }
+    #right { flex:1; min-width:320px; }
+    #chart { height:520px; border-radius:8px; overflow:hidden; background:#08121a; }
+    #rsi { height:120px; margin-top:8px; border-radius:6px; overflow:hidden; background:#08121a; }
+    pre { background:#06101a; padding:8px; border-radius:6px; color:#9fd3ff; max-height:320px; overflow:auto; }
+    .muted { color:#8fa3c4; font-size:12px; }
+    .tag { font-size:12px; background:#0b2a44; padding:4px 8px; border-radius:6px; margin-left:6px; }
+  </style>
+  <!-- lightweight-charts -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<h2 style="text-align:center; font-size:40px;">Patel</h2>
+
+  <div id="layout">
+    <div id="left">
+      <div class="card">
+        <label>Coins (comma separated, e.g., ETHUSDT,BTCUSDT)</label>
+        <input id="coins" value="ETHUSDT" />
+        <div class="row">
+          <div class="col">
+            <label>Timeframe</label>
+            <select id="tf">
+              <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
+              <option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option>
+            </select>
+          </div>
+          <div class="col">
+            <label>Email to notify (comma separated)</label>
+            <input id="email" placeholder="you@example.com" />
+          </div>
+        </div>
+
+        <div style="margin-top:8px;">
+          <label>Alert Type</label>
+          <select id="alertType">
+            <option value="price_above">Price Above</option>
+            <option value="price_below">Price Below</option>
+            <option value="rsi_above">RSI Above</option>
+            <option value="rsi_below">RSI Below</option>
+            <option value="price_above_ema">Price Above EMA</option>
+            <option value="price_below_ema">Price Below EMA</option>
+            <option value="ema_cross_up">EMA 9 Cross Above EMA 20</option>
+            <option value="ema_cross_down">EMA 9 Cross Below EMA 20</option>
+          </select>
+
+          <label id="valueLabel">Value (price in USD or RSI number)</label>
+          <input id="value" placeholder="e.g. 3000 or 70 (not required for cross alerts)" />
+
+          <div id="emaInputs" style="display:none; margin-top:8px;">
+            <div class="row">
+              <div class="col">
+                <label>Fast EMA Length</label>
+                <input id="emaFast" value="9" />
+              </div>
+              <div class="col">
+                <label>Slow EMA Length</label>
+                <input id="emaSlow" value="20" />
+              </div>
+            </div>
+            <div class="small">Defaults used: Fast = 9, Slow = 20 (we'll plot EMA9 & EMA20 on chart).</div>
+          </div>
+
+          <button id="addAlert" class="btn" style="margin-top:10px;">Add Alert</button>
+          <div class="small">Note: Alerts evaluate client-side using Binance websockets and REST. Backend only sends the email via <code>/send_alert_email</code>.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Active Alerts <span class="muted">(click Reset to re-arm)</span></h3>
+        <div id="alerts" class="alerts-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>Logs</h3>
+        <pre id="log"></pre>
+      </div>
+    </div>
+
+    <div id="right">
+      <div class="card" style="padding:10px;">
+        <div style="display:flex; gap:10px; align-items:center;">
+          <div style="flex:1;">
+            <label>Chart Symbol</label>
+            <input id="chartSymbol" value="ETHUSDT" />
+          </div>
+          <div style="width:130px;">
+            <label>Chart TF</label>
+            <select id="chartTf">
+              <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
+              <option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option>
+            </select>
+          </div>
+          <div style="width:120px; margin-top:22px;">
+            <button id="applyChart" class="btn">Show Chart</button>
+          </div>
+        </div>
+
+        <div id="chart" style="margin-top:10px;"></div>
+        <div id="rsi"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ========== CONFIG ==========
+const EMAIL_SERVER_URL = "http://localhost:5000/send_alert_email";
+const API_KEY = "some_secret_key_here";
+// ==========
+
+const alerts = [];
+const klines = {};
+const wsPool = {};
+const logEl = document.getElementById("log");
+function log(msg){ const line = `[${new Date().toLocaleTimeString()}] ${msg}`; logEl.textContent = line + "\n" + logEl.textContent; }
+function uid(){ return Math.random().toString(36).slice(2,9); }
+
+// UI show/hide
+const alertTypeEl = document.getElementById('alertType');
+const emaInputsEl = document.getElementById('emaInputs');
+const valueLabelEl = document.getElementById('valueLabel');
+function updateUIForAlertType(){
+  const type = alertTypeEl.value;
+  if(type === 'ema_cross_up' || type === 'ema_cross_down'){
+    emaInputsEl.style.display = 'block';
+    valueLabelEl.textContent = 'Value (not required for cross alerts)';
+    document.getElementById('value').placeholder = '(not used)';
+  } else if(type === 'price_above_ema' || type === 'price_below_ema'){
+    emaInputsEl.style.display = 'block';
+    valueLabelEl.textContent = 'Value (price in USD)';
+    document.getElementById('value').placeholder = 'e.g. 3000';
+  } else {
+    emaInputsEl.style.display = 'none';
+    if(type === 'rsi_above' || type === 'rsi_below'){ valueLabelEl.textContent = 'RSI value (0-100)'; document.getElementById('value').placeholder = 'e.g. 70'; }
+    else { valueLabelEl.textContent = 'Value (price in USD or RSI number)'; document.getElementById('value').placeholder = 'e.g. 3000 or 70'; }
+  }
+}
+alertTypeEl.addEventListener('change', updateUIForAlertType);
+updateUIForAlertType();
+
+// Add alert
+document.getElementById("addAlert").addEventListener("click", ()=> {
+  const coinsRaw = document.getElementById("coins").value.trim().toUpperCase();
+  if(!coinsRaw){ alert("enter coin(s)"); return; }
+  const coins = coinsRaw.split(",").map(s=>s.trim()).filter(Boolean);
+  const tf = document.getElementById("tf").value;
+  const emails = document.getElementById("email").value.split(",").map(s=>s.trim()).filter(Boolean);
+  if(emails.length===0){ alert("enter at least one email"); return; }
+  const type = document.getElementById("alertType").value;
+  const valRaw = document.getElementById("value").value.trim();
+  const emaFast = parseInt(document.getElementById("emaFast").value || "9");
+  const emaSlow = parseInt(document.getElementById("emaSlow").value || "20");
+
+  let value = null;
+  if(type !== 'ema_cross_up' && type !== 'ema_cross_down'){
+    if(!valRaw){ alert("set value"); return; }
+    value = parseFloat(valRaw);
+    if(isNaN(value)){ alert("value must be a number"); return; }
+  }
+
+  if(isNaN(emaFast) || emaFast < 1) { alert("EMA Fast must be a positive integer"); return; }
+  if(isNaN(emaSlow) || emaSlow < 1) { alert("EMA Slow must be a positive integer"); return; }
+
+  const a = { id: uid(), coins, tf, type, value, emails, triggered:false, emaFast, emaSlow };
+  alerts.push(a);
+  renderAlerts();
+  log(`Added alert ${a.id} for ${coins.join(",")} (${tf}) ${type} ${value || ''} -> ${emails.join(",")}`);
+  coins.forEach(sym => ensureKlineSocket(sym, tf));
+});
+
+function renderAlerts(){
+  const el = document.getElementById("alerts");
+  el.innerHTML = "";
+  alerts.forEach(a=>{
+    const div = document.createElement("div"); div.className="alert-item";
+    div.innerHTML = `<b>${a.coins.join(",")}</b> — ${a.tf} — ${a.type} ${a.value ? a.value : ''} — To: ${a.emails.join(", ")} 
+      <div style="margin-top:6px;">
+        <button onclick="removeAlert('${a.id}')" class="btn red">Remove</button>
+        <button onclick="testAlert('${a.id}')" class="btn green">Test</button>
+        <button onclick="resetAlert('${a.id}')" class="btn">Reset</button>
+      </div>
+      <div class="small">Fast:${a.emaFast} Slow:${a.emaSlow} • Triggered: ${a.triggered}</div>`;
+    el.appendChild(div);
+  });
+}
+
+window.removeAlert = function(id){
+  const idx = alerts.findIndex(x=>x.id===id);
+  if(idx>=0){ alerts.splice(idx,1); renderAlerts(); log(`Removed ${id}`); }
+}
+window.resetAlert = function(id){
+  const a = alerts.find(x=>x.id===id);
+  if(a){ a.triggered = false; renderAlerts(); log(`Reset ${id}`); }
+}
+window.testAlert = function(id){
+  const a = alerts.find(x=>x.id===id);
+  if(!a) return;
+  const body = `Test alert for ${a.coins.join(", ")} (${a.tf}) - ${a.type} ${a.value ? a.value : ''} (Fast:${a.emaFast} Slow:${a.emaSlow})`;
+  for(const to of a.emails){
+    sendEmail(to, `Test: ${a.type} ${a.coins.join(",")}`, body).then(r=>{
+      if(r && r.ok) log(`Test email sent to ${to}`); else log(`Test failed to ${to}: ${JSON.stringify(r)}`);
+    });
+  }
+}
+
+// send email (calls your flask)
+async function sendEmail(to, subject, body){
+  try{
+    const res = await fetch(EMAIL_SERVER_URL, {
+      method:"POST",
+      headers: {
+        "Content-Type":"application/json",
+        "x-api-key": API_KEY
+      },
+      body: JSON.stringify({ to, subject, body })
+    });
+    try { return await res.json(); } catch(e){ return { ok: res.ok }; }
+  }catch(err){
+    return { ok:false, error: err.toString() };
+  }
+}
+
+// ---------- REST + WS ----------
+async function fetchHistorical(symbol, tf, limit=500){
+  const key = `${symbol}_${tf}`;
+  const endpoint = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=${limit}`;
+  try{
+    const r = await fetch(endpoint);
+    if(!r.ok) throw new Error('REST error '+r.status);
+    const arr = await r.json();
+    klines[key] = arr.map(d=>({
+      t: Math.floor(d[0]/1000),
+      o: parseFloat(d[1]),
+      h: parseFloat(d[2]),
+      l: parseFloat(d[3]),
+      c: parseFloat(d[4]),
+      v: parseFloat(d[5]),
+      isFinal: true
+    }));
+    if(klines[key].length > 2000) klines[key] = klines[key].slice(-2000);
+    return true;
+  }catch(err){
+    log(`REST fetch failed ${key}: ${err}`);
+    return false;
+  }
+}
+
+function ensureKlineSocket(symbol, tf){
+  const key = `${symbol}_${tf}`;
+  if(wsPool[key]) return;
+  fetchHistorical(symbol, tf).then(()=> {
+    if(currentChartKey === key) applyChartDataToSeries(key);
+  });
+
+  const url = `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${tf}`;
+  try{
+    const ws = new WebSocket(url);
+    wsPool[key] = ws;
+    ws.onopen = ()=> log(`WS open ${key}`);
+    ws.onclose = ()=> { log(`WS closed ${key}`); delete wsPool[key]; setTimeout(()=>ensureKlineSocket(symbol,tf),2000); };
+    ws.onerror = (e)=> log(`WS error ${key} ${e.message || e}`); 
+    ws.onmessage = (ev) => {
+      try{
+        const data = JSON.parse(ev.data);
+        if(!data.k) return;
+        const k = data.k;
+        const candle = {
+          t: Math.floor(k.t/1000),
+          o: parseFloat(k.o),
+          h: parseFloat(k.h),
+          l: parseFloat(k.l),
+          c: parseFloat(k.c),
+          v: parseFloat(k.v),
+          isFinal: !!k.x
+        };
+        const arr = klines[key] || [];
+        if(arr.length === 0 || arr[arr.length-1].t !== candle.t) arr.push(candle);
+        else arr[arr.length-1] = candle;
+        if(arr.length > 2000) arr.shift();
+        klines[key] = arr;
+
+        evaluateAlertsFor(symbol, tf, candle);
+        updateChartWithCandle(symbol, tf, candle);
+      }catch(err){ console.error(err); }
+    };
+  }catch(err){
+    log("WS create failed: " + err.toString());
+  }
+}
+
+// ---------- INDICATORS ----------
+function computeEMASeries(closes, period){
+  const res = new Array(closes.length).fill(null);
+  const k = 2 / (period + 1);
+  if(closes.length === 0) return res;
+  if(closes.length >= period){
+    let sum = 0;
+    for(let i=0;i<period;i++) sum += closes[i];
+    let emaPrev = sum / period;
+    res[period-1] = emaPrev;
+    for(let i=period;i<closes.length;i++){
+      const ema = (closes[i] - emaPrev) * k + emaPrev;
+      res[i] = ema;
+      emaPrev = ema;
+    }
+  } else {
+    let sum = 0;
+    for(let i=0;i<closes.length;i++) sum += closes[i];
+    res[closes.length-1] = sum / closes.length;
+  }
+  return res;
+}
+
+function computeRSIFromCloses(closes, period=14){
+  if(closes.length < period+1) return null;
+  let gains=0, losses=0;
+  for(let i=closes.length-period; i<closes.length; i++){
+    const diff = closes[i] - closes[i-1];
+    if(diff>0) gains += diff; else losses += Math.abs(diff);
+  }
+  if(losses===0) return 100;
+  const rs = (gains/period) / (losses/period);
+  return 100 - (100 / (1+rs));
+}
+
+// ---------- ALERT EVALUATION ----------
+async function evaluateAlertsFor(symbol, tf, candle){
+  for(const a of alerts){
+    if(a.triggered) continue;
+    if(!a.coins.includes(symbol)) continue;
+    if(a.tf !== tf) continue;
+
+    const arr = klines[`${symbol}_${tf}`] || [];
+    const closes = arr.map(x=>x.c);
+    let condition=false;
+
+    if(a.type === "price_above"){
+      condition = candle.c > a.value;
+    } else if(a.type === "price_below"){
+      condition = candle.c < a.value;
+    } else if(a.type === "rsi_above"){
+      const rsi = computeRSIFromCloses(closes, 14);
+      if(rsi !== null) condition = rsi > a.value;
+    } else if(a.type === "rsi_below"){
+      const rsi = computeRSIFromCloses(closes, 14);
+      if(rsi !== null) condition = rsi < a.value;
+    } else if(a.type === "price_above_ema" || a.type === "price_below_ema"){
+      const emaSeries = computeEMASeries(closes, a.emaFast || 20);
+      const lastEma = emaSeries.length ? emaSeries[emaSeries.length-1] : null;
+      if(lastEma !== null){
+        if(a.type === "price_above_ema") condition = candle.c > lastEma;
+        else condition = candle.c < lastEma;
+      }
+    } else if(a.type === "ema_cross_up" || a.type === "ema_cross_down"){
+      if(closes.length < Math.max(a.emaSlow, a.emaFast) + 2) continue;
+      const emaFastSeries = computeEMASeries(closes, a.emaFast);
+      const emaSlowSeries = computeEMASeries(closes, a.emaSlow);
+      const n = closes.length;
+      const prevFast = emaFastSeries[n-2];
+      const prevSlow = emaSlowSeries[n-2];
+      const curFast  = emaFastSeries[n-1];
+      const curSlow  = emaSlowSeries[n-1];
+      if(prevFast === null || prevSlow === null || curFast === null || curSlow === null) continue;
+      if(a.type === "ema_cross_up"){
+        condition = (prevFast < prevSlow) && (curFast > curSlow);
+      } else {
+        condition = (prevFast > prevSlow) && (curFast < curSlow);
+      }
+    }
+
+    if(condition){
+      a.triggered = true;
+      renderAlerts();
+      const msg = `${symbol} (${tf}) | ${a.type} triggered.\nPrice: ${candle.c}\nEMA Fast:${a.emaFast} Slow:${a.emaSlow}\nTime: ${new Date(candle.t*1000).toLocaleString()}`;
+      log(`Triggered ${a.id} for ${symbol}: ${msg}`);
+      for(const to of a.emails){
+        try{
+          const res = await sendEmail(to, `ALERT: ${symbol} ${a.type}`, msg);
+          log(`Email to ${to}: ${JSON.stringify(res)}`);
+        }catch(e){ log(`Email error to ${to}: ${e}`); }
+      }
+    }
+  }
+}
+
+// ---------- CHART ----------
+let chartObj = null;
+let candleSeries = null;
+let ema9Series = null;
+let ema20Series = null;
+let rsiSeries = null;
+let currentChartKey = null;
+
+function createChart(containerId, rsiContainerId){
+  if(chartObj) {
+    try{ chartObj.remove(); }catch(e){}
+    chartObj = null; candleSeries = null; ema9Series=null; ema20Series=null; rsiSeries=null;
+  }
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+  chartObj = LightweightCharts.createChart(container, {
+    width: container.clientWidth,
+    height: 520,
+    layout: { background: { type: 'solid', color: '#08121a' }, textColor: '#e6eef8' },
+    grid: { vertLines: { color: '#0b1220' }, horzLines: { color: '#0b1220' } },
+    timeScale: { timeVisible: true, secondsVisible: false }
+  });
+
+  candleSeries = chartObj.addCandlestickSeries({
+    upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+  });
+
+  ema9Series = chartObj.addLineSeries({ color: '#2ea3ff', lineWidth: 2 });
+  ema20Series = chartObj.addLineSeries({ color: '#ffd166', lineWidth: 2 });
+
+  const rsiContainer = document.getElementById(rsiContainerId);
+  rsiContainer.innerHTML = "";
+  const rsiChart = LightweightCharts.createChart(rsiContainer, {
+    width: rsiContainer.clientWidth, height: 120,
+    layout: { background: { type: 'solid', color: '#08121a' }, textColor: '#9aa7bf' },
+    grid: { vertLines: { color: '#0b1220' }, horzLines: { color: '#0b1220' } },
+    timeScale: { timeVisible: true, secondsVisible: false }
+  });
+  rsiSeries = rsiChart.addLineSeries({ color: '#9fd3ff', lineWidth: 2 });
+
+  window.addEventListener('resize', ()=> {
+    try{
+      chartObj.applyOptions({ width: container.clientWidth });
+      rsiChart.applyOptions({ width: rsiContainer.clientWidth });
+    }catch(e){}
+  });
+}
+
+function klinesToChartData(arr){
+  return arr.map(c => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c }));
+}
+
+function computeRSISeriesFromKlines(arr, period=14){
+  const closes = arr.map(x=>x.c);
+  const result = [];
+  if(closes.length < period+1) return result;
+  for(let i=period; i<closes.length; i++){
+    const seg = closes.slice(0, i+1);
+    const rsi = computeRSIFromCloses(seg, period);
+    if(rsi !== null) result.push({ time: arr[i].t, value: parseFloat(rsi.toFixed(2)) });
+  }
+  return result;
+}
+
+function applyChartDataToSeries(key){
+  const arr = klines[key] || [];
+  if(!candleSeries) createChart('chart','rsi');
+  if(arr.length === 0) return;
+  candleSeries.setData(klinesToChartData(arr));
+
+  const closes = arr.map(x=>x.c);
+  const ema9Vals = computeEMASeries(closes, 9);
+  const ema20Vals = computeEMASeries(closes, 20);
+  const ema9Data = [];
+  const ema20Data = [];
+  for(let i=0;i<arr.length;i++){
+    if(ema9Vals[i] !== null) ema9Data.push({ time: arr[i].t, value: parseFloat(ema9Vals[i].toFixed(6)) });
+    if(ema20Vals[i] !== null) ema20Data.push({ time: arr[i].t, value: parseFloat(ema20Vals[i].toFixed(6)) });
+  }
+  ema9Series.setData(ema9Data);
+  ema20Series.setData(ema20Data);
+
+  const rsiData = computeRSISeriesFromKlines(arr, 14);
+  if(rsiData.length) rsiSeries.setData(rsiData);
+}
+
+function ensureChartFor(symbol, tf){
+  const key = `${symbol}_${tf}`;
+  currentChartKey = key;
+  if(!chartObj) createChart('chart','rsi');
+  if((klines[key] || []).length > 0){
+    applyChartDataToSeries(key);
+  } else {
+    log(`No cached klines for ${key} yet — fetching historical...`);
+    fetchHistorical(symbol, tf).then(()=> applyChartDataToSeries(key) );
+  }
+}
+
+function updateChartWithCandle(symbol, tf, candle){
+  const key = `${symbol}_${tf}`;
+  if(currentChartKey !== key) return;
+  try{
+    candleSeries.update({ time: candle.t, open: candle.o, high: candle.h, low: candle.l, close: candle.c });
+  }catch(e){
+    applyChartDataToSeries(key);
+  }
+  const arr = klines[key] || [];
+  const closes = arr.map(x=>x.c);
+  const ema9Vals = computeEMASeries(closes, 9);
+  const ema20Vals = computeEMASeries(closes, 20);
+  const lastIdx = arr.length - 1;
+  const updateEma9 = (ema9Vals[lastIdx] != null) ? { time: arr[lastIdx].t, value: parseFloat(ema9Vals[lastIdx].toFixed(6)) } : null;
+  const updateEma20 = (ema20Vals[lastIdx] != null) ? { time: arr[lastIdx].t, value: parseFloat(ema20Vals[lastIdx].toFixed(6)) } : null;
+  if(updateEma9) {
+    try{ ema9Series.update(updateEma9); } catch(e){ applyChartDataToSeries(key); }
+  }
+  if(updateEma20) {
+    try{ ema20Series.update(updateEma20); } catch(e){ applyChartDataToSeries(key); }
+  }
+  const rsiData = computeRSISeriesFromKlines(arr, 14);
+  if(rsiData.length) rsiSeries.setData(rsiData);
+}
+
+// auto-connect
+ensureKlineSocket("ETHUSDT","1m");
+ensureKlineSocket("BTCUSDT","1m");
+
+// chart UI apply
+document.getElementById("applyChart").addEventListener("click", ()=>{
+  const s = document.getElementById("chartSymbol").value.trim().toUpperCase();
+  const tf = document.getElementById("chartTf").value;
+  if(!s) return alert("Enter symbol");
+  ensureKlineSocket(s, tf);
+  ensureChartFor(s, tf);
+  log(`Chart set to ${s} ${tf}`);
+});
+
+// initial
+ensureChartFor("ETHUSDT","1m");
+</script>
+</body>
+</html>
